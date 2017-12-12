@@ -1,0 +1,386 @@
+---
+output: 
+  pdf_document:
+    citation_package: natbib
+    keep_tex: true
+    fig_caption: true
+    latex_engine: pdflatex
+title: "Acceptance Rates of Refugees Throughout the World"
+author: "Bas Vervaart and Fabian Hafner"
+  
+
+abstract: "This paper investigates the statistics of refugee-intaking countries. Specifically, we want to explore what could possibly have an influence on the acceptance rates of refugees. Next to descriptive statistics  around refugee-intaking countries and around the summer of 2015 in which Europe experienced a spike in refugee migration, we ask weather GDP is a predictor for acceptance rates. We find that neither for the worldwide dataset, nor for a European subset, GDP is a significant predictor for acceptance rates. Rich countries do not live up to their economic potential."
+
+keywords: "refugees, Germany, acceptance shares"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+geometry: margin=1in
+fontfamily: mathpazo
+fontsize: 11pt
+# spacing: double
+
+---
+---
+```{r, echo=FALSE, include=FALSE}
+dir <- "C:/Users/Fabian/Box Sync/Uni/2017_Wintersemester/Data_Management/Final Project"
+setwd(dir)
+library(RSQLite)
+library(readxl)
+library(tidyverse)
+library(dbplyr)
+library(dplyr)
+library(readr)
+library(DBI)
+library(dummies)
+library(dummy)
+library(plyr)
+library(stargazer)
+library(plm)
+library(plotly)
+library(lmtest)
+
+### renaming column names
+colnames_refugee <- c("Year", "Country", "Origin", "RSD.procedure","Total pending start",
+                  "UNCHR assisted","Applied during year", "decision_recognized",
+                  "decision_other", "Rejected", "Otherwise closed", "Total decisions",
+                  "Total pending end year", "of.which.UNCHR.assisted")
+
+colnames_population <- c("Year", "Country","Origin","Population.type","Value")
+colnames_GDP <- c("GDP", "Code", "Country", "Country_Code", "2000", "2001", "2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017")
+colnames_GDPPC <- c("GDPPC", "Code", "Country", "Country_Code", "2000", "2001", "2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017")
+
+
+### loading data sets
+refugee <- read.csv("unhcr_popstats_asylum_seekers.csv", 
+                     skip=3, 
+                     na.string=c("","-","*"),
+                     col.names=colnames_refugee)
+
+population <- read.csv("unhcr_popstats_population_type.csv",
+                       skip=3,
+                       na.string=c("","-","*"),
+                       col.names=colnames_population)
+
+GDP <- read.csv("World_Bank_GDP.csv", 
+                na.strings = c("","-", "*", ".."),
+                col.names = colnames_GDP)
+  
+GDPPC <- read.csv("World_Bank_GDPPC.csv",
+                  na.strings = c("","-", "*", ".."),
+                  col.names = colnames_GDPPC)
+
+countries <- read.csv("Countries-Continents-csv.csv")
+
+
+
+###############################################
+##### Data cleaning and merging 
+###############################################
+### collapsing to only country and year 
+## for population
+pop <- population %>% 
+  select(-Origin) %>% 
+  group_by(Year, Country, Population.type) %>% 
+  summarize_all(sum)
+# spreadin the data 
+pop <- pop %>% 
+  spread(key=Population.type, value=Value)
+
+## for refugee
+ref <- refugee %>% 
+  select(-Origin, -RSD.procedure) %>% 
+  group_by(Year, Country) %>%
+  summarize_all(sum, na.rm=TRUE)
+  
+
+### calculating acceptance rates 
+#Create the acceptance rate
+# At T-1 there are 265 pending decisions
+# At T there are 2156 applications
+# At T+1 there are 1235 pending decisions
+
+# (T-1 + T) - T+1 = Total applications processed, which is column total decisions
+# decision_recognized = all decisions recognized
+# decision_other and Rejected = all decisions that were not recognized
+# Acceptance rate is then decision_recognized divided by total.decisions
+ref <- ref %>% 
+  mutate(share_accept = decision_recognized/Total.decisions)
+
+
+
+###### merging population and refugee, dropping all countries where we cannot calculate acceptance rates (i.e. inner join)
+refpop <- inner_join(ref, pop, by=c("Year", "Country"))
+
+
+############ adding GDP
+## "gathering" the GDPs Dataset to be combined with population dataset
+GDP_new <- GDP %>% 
+  select(-GDP, -Code, -X2017, -Country_Code) %>% 
+  gather(key = Year, value = GDP, X2000:X2016, na.rm = TRUE) %>% 
+  mutate(Year = readr::parse_number(Year))
+
+GDPPC_new <- GDPPC %>% 
+  select(-GDPPC, -Code, -X2017, -Country_Code) %>% 
+  gather(key = Year, value = GDPPC, X2000:X2016, na.rm = TRUE) %>% 
+  mutate(Year = readr::parse_number(Year))
+
+GDPS <- full_join(GDP_new, GDPPC_new, by=c("Country", "Year"))
+
+###################### merging refpop and GDPS
+
+# renaming countries to merge later   
+GDPS$Country <- stringr::str_replace_all(GDPS$Country, "Cote d'Ivoire", "Côte d'Ivoire")
+GDPS$Country <- stringr::str_replace_all(GDPS$Country, "Czech Republic", "Czech Rep.")
+GDPS$Country <- stringr::str_replace_all(GDPS$Country, "United States", "United States of America")
+GDPS$Country <- stringr::str_replace_all(GDPS$Country, "Slovak Republic", "Slovakia")
+GDPS$Country <- stringr::str_replace_all(GDPS$Country, "Syrian Arab Republic", "Syrian Arab Rep.")
+GDPS$Country <- stringr::str_replace_all(GDPS$Country, "Lao PDR", "Lao People's Dem. Rep.")
+GDPS$Country <- stringr::str_replace_all(GDPS$Country, "Kyrgyz Republic", "Kyrgyzstan")
+GDPS$Country <- stringr::str_replace_all(GDPS$Country, "Vietnam", "Viet Nam")
+GDPS$Country <- stringr::str_replace_all(GDPS$Country, "Tanzania", "United Rep. of Tanzania")
+GDPS$Country <- stringr::str_replace_all(GDPS$Country, "Moldova", "Rep. of Moldova")
+GDPS$Country <- stringr::str_replace_all(GDPS$Country, "Central African Republic", "Central African Rep.")
+GDPS$Country <- stringr::str_replace_all(GDPS$Country, "Bolivia", "Bolivia (Plurinational State of)")
+
+# adding Kosovo and Serbia (adding the $ to not overwrite the Serbia entries twice )
+GDPS$Country <- stringr::str_replace_all(GDPS$Country, "Kosovo", "Serbia and Kosovo (S/RES/1244 (1999))")
+GDPS$Country <- stringr::str_replace_all(GDPS$Country, "Serbia$", "Serbia and Kosovo (S/RES/1244 (1999))")
+GDPS <- GDPS %>% 
+  group_by(Year, Country) %>%
+  summarize_all(sum, na.rm=TRUE)
+
+## checking what what the non-congruent states are (using anti-join), showing all countries in refpop which don't have a corresponding country in GDPS
+anti <- anti_join(refpop, GDPS, by="Country") %>% 
+  filter(Year==2001)
+# --> countries which could not be found in GDPS: Macedonia, Iran, Rep. of Korea, Congo, Egypt, Venezuela, Yemen, Dem. Rep. of the Congo, Gambia, "China, Hong Kong SAR", 
+
+# check which countries remain in the GDPS dataset 
+anti <- anti_join(GDPS, refpop, by="Country") %>% 
+  filter(Year==2001)
+# --> the remaining countries in that list are either regional groups of countries, small Islands or micro-states
+
+#################### merging GDPS and refpop
+refpopGDPS <- inner_join(refpop, GDPS, by=c("Year", "Country"))
+# what happens: observations drop from 2699 (in refpop) to 2400 (in final) 
+# The dropped countries are countries which do not show up in the GDPS dataset: Macedonia, Iran, Rep. of Korea, Congo, Egypt, Venezuela, Yemen, Dem. Rep. of the Congo, Gambia, "China, Hong Kong SAR"
+
+
+#################### creating a continent variable
+### using a country-continent database (https://old.datahub.io/dataset/countries-continents/resource/aa08c34c-57e8-4e15-bd36-969bee26aba5)
+### check for diverging names
+countries$Country <- stringr::str_replace_all(countries$Country, "(.*)Serbia(.*)", "Serbia and Kosovo (S/RES/1244 (1999))")
+countries$Country <- stringr::str_replace_all(countries$Country, "(.*)Kosovo(.*)", "Serbia and Kosovo (S/RES/1244 (1999))")
+countries$Country <- stringr::str_replace_all(countries$Country, "(.*)Burma(.*)", "Myanmar")
+countries$Country <- stringr::str_replace_all(countries$Country, "(.*)Burkina(.*)", "Burkina Faso")
+countries$Country <- stringr::str_replace_all(countries$Country, "(.*)Ivory(.*)", "Côte d'Ivoire")
+countries$Country <- stringr::str_replace_all(countries$Country, "(.*)Czech Republic(.*)", "Czech Rep.")
+countries$Country <- stringr::str_replace_all(countries$Country, "(.*)United States(.*)", "United States of America")
+countries$Country <- stringr::str_replace_all(countries$Country, "(.*)Slovak Republic(.*)", "Slovakia")
+countries$Country <- stringr::str_replace_all(countries$Country, "(.*)Syria(.*)", "Syrian Arab Rep.")
+countries$Country <- stringr::str_replace_all(countries$Country, "(.*)Lao(.*)", "Lao People's Dem. Rep.")
+countries$Country <- stringr::str_replace_all(countries$Country, "(.*)Kyrg(.*)", "Kyrgyzstan")
+countries$Country <- stringr::str_replace_all(countries$Country, "(.*)Viet(.*)", "Viet Nam")
+countries$Country <- stringr::str_replace_all(countries$Country, "(.*)Tanz(.*)", "United Rep. of Tanzania")
+countries$Country <- stringr::str_replace_all(countries$Country, "(.*)Mold(.*)", "Rep. of Moldova")
+countries$Country <- stringr::str_replace_all(countries$Country, "Central African Republic", "Central African Rep.")
+countries$Country <- stringr::str_replace_all(countries$Country, "(.*)Bolivia(.*)", "Bolivia (Plurinational State of)")
+countries <- countries %>% 
+  select(Continent, Country) %>% 
+  distinct()
+
+
+########### merging countries
+final <- full_join(refpopGDPS, countries, by="Country")
+
+final <- final %>% 
+  mutate(asylum_seekers =`Asylum-seekers`) %>% 
+  mutate(IDP =`Internally displaced persons`) %>% 
+  mutate(others =`Others of concern`) %>% 
+  mutate(ref =`Refugees (incl. refugee-like situations)`) %>% 
+  mutate(returnidp =`Returned IDPs`) %>% 
+  mutate(returnref =`Returned refugees`) %>% 
+  mutate(stateless =`Stateless persons`) %>% 
+  select(-`Stateless persons`, -`Returned refugees`, `Returned IDPs`, `Refugees (incl. refugee-like situations)`, `Others of concern`, `Internally displaced persons`, `Asylum-seekers` )
+
+  
+final_clean <- final %>% 
+  gather(key=Population.Type, value = rank, asylum_seekers:stateless, na.rm=TRUE) %>% 
+  arrange(Year, Country)
+  
+  #Create log variables 
+final$ln.GDP = log(final$GDP)
+final$ln.GDPPC=log(final$GDPPC)
+final$ln.apply = log(final$Applied.during.year)
+final$ln.asylum=log(final$`asylum_seekers`)
+final$ln.IDP=log(final$`IDP`)
+final$ln.others=log(final$`others`)
+final$ln.ref=log(final$`ref`)
+final$ln.returnidp=log(final$`returnidp`)
+final$ln.returnref=log(final$`returnref`)
+final$ln.stateless=log(final$`stateless`)
+
+```
+
+
+
+
+#INTRODUTION
+
+## Data description
+The paper uses data from three different sources. At the center of our analysis are data from the UNHCR (<http://popstats.unhcr.org/en/overview>), using two specific datasets. The first one ("Persons of concern" on the website but referred to as "Refugee" here and in the code) contains information on refugee flows by countries of origin and countries of destination and concentrates  on data about the destination-countries' asylum process.
+
+
+The second UNHCR dataset ("Persons of Concern" but referred to as \"Population"\ here and in the code) contains statistics on refugee flows outside of the countries\' asylum process. This means that next to \"Asylum-Seekers"\ it also contains data on, for example, "Refugees" which are people which flee their country but do not show up yet in another country\'s asylum process statistics.
+
+The third dataset contains information on countries' GDP and GDP per capita, retrieved from the World Bank database (<https://data.worldbank.org/>). The fourth dataset is a simple country-continent dataset found on <https://old.datahub.io/dataset/countries-continents/resource/aa08c34c-57e8-4e15-bd36-969bee26aba5>.
+
+## Merging, Cleaning, Mutating
+As our analysis focuses on the "receiving end" of migration flows (i.e. the destination countries) we drop all information on the migrants' origin in the "Refugee" dataset. Therefore, we aggregate all countries' data on the asylum process to just one observation per country and year. 
+
+Our variable of interest, the share of people accepted as "refugees" by the total of applications, is calculated as follows. "Share_accept" is the decisions recognized ("decisions_recognized") divided by the total decisions ("Total.decision"), whereby the decisions recognized is the sum of the applications pending from the last year plus the new applications of the respective year minus the applications which are still pending at the end of the year. 
+
+Acceptance_share = (Total.pending.start + Applied.during.year - total.pending.end.year)/ decision_recognized
+
+Next, the "refugee" dataset is merged with the "population" dataset. As countries and years are identical, we can use dplyr's "inner_join" to create the new dataset "refpop".
+
+To make use of the World Bank data, the dataset is turned into a "clean dataset", gathering the years into rows along with countries. As country-ISOs are missing in the UNHCR data, the country names need to be coded consistently throughout both data sets. To find diverging spelling, we compare both datasets with dplyr's "anti-join" function and adjust the names through regular expressions. "Serbia" and "Kosovo" are joined to one observation, following the World Bank Data. Countries which further could not be found in the World Bank Data are: Macedonia, Iran, Rep. of Korea, Congo, Egypt, Venezuela, Yemen, Dem. Rep. of the Congo, Gambia, China (Hong Kong SAR). These countries needed to be dropped for the further analysis.
+
+Finally, the country-continents dataset is merged to create the final "final"-Dataset, using again regular expressions to adjust for diverging country spelling. The final dataset contains data on 133 countries and excludes the countries mentioned, as well as some micro-states and islands. Note that "final" is not clean but this is intended to be able to declare it time series data later on. We also created a clean version ("final_clean") which is needed for Fig. 1. 
+
+# DESCRIPTIVE ANALYSIS
+
+## Final data variable adjustment
+
+Before we perform our descriptive analysis we create logarithmic variables for some of our key variables, to be able to scale them properly for our graphs and our model. The coding for this can be found in the attachment.   
+
+## Leading up to the summer of 2015 - a general analysis on refugee types by destination
+
+Leading up to the refugee crisis in 2015, we first want to take a look on how refugee numbers developed over time. We, therefore, look at the development over time and see that up to the year 2013, refugee populations of all types have gradually increased up to 50 million in 2013. Compared to this decade we see a big spike in refugees in 2014 and 2015. 
+The increase in the number of refugees is mainly driven by the increased in (returned) Internally Displaced Persons and Stateless persons. The total population of IDPs at the end of 2015 has been the highest figure on record and is arguably largely driven by the persistent violence in the Middle East region. 
+
+```{r p, fig.height= 8, fig.asp=0.4, echo=FALSE}
+p <- ggplot(data = final_clean,
+            mapping = aes(x = Year, fill=Population.Type ))
+p + geom_bar() +
+  ggtitle ("Plot 1: Refugees by population type across time") +
+  xlab ("Time") +
+  ylab("Count (x 10,000)")
+
+```
+
+
+By 2015, we then find a composition of refugees in destination countries as shown in Fig.2. The plot shows a ranking of the biggest destination countries by the number of already accepted refugees (i.e. refugees which are recognized as such by the country of destination and are permitted to stay). The data tells us the interesting story that most of the refugees that crossed international borders in 2015 likely ended up in the region. Countries in Africa and Asia such as Turkey, Pakistan, Lebanon, Ethiopia and Kenya were amongst the highest receivers of refugees in 2015 - all countries which border major conflict areas. 
+
+```{r refugeesbar, echo=FALSE}
+refugeesbar<- final %>% 
+  select(Year,Country,ref,Continent) %>% 
+  filter(Year=="2015") %>% 
+  filter(ref>75000)
+ggplot(data=refugeesbar, mapping= aes(x=reorder(Country,ref),
+                                      y=ref,fill=Continent))+
+  geom_bar(stat="identity") + 
+  coord_flip() +   
+ggtitle ("Plot 2: Countries with highest refugees influx in 2015") +
+  xlab ("Number of refugees") +
+  ylab("Countries")
+```
+
+At the same point, looking at Fig. 3, we find that the picture differs drastically for asylum seekers (which are people who are still applying for asylum and either await acceptance or denial). Countries which already have a lot of recognized refugees are not necessarily countries which face a lot of applicants. On the other hand, some countries, like South Africa, face large amounts of applicants and do even show up in the list of countries with the most refugees already accepted. This suggests that South Africa does not seem to accept a lot of asylum seekers. Other countries with large application numbers like the USA or Germany show higher amounts of already accepted refugees, suggesting higher acceptance rates. This debate around acceptance rates will be featured more prominently in the next section. 
+
+
+```{r Plot_3, echo=FALSE}
+final2015asylum <- final %>% 
+  select(Year,Country,asylum_seekers,Continent) %>% 
+  filter(Year=="2015") %>% 
+  filter(asylum_seekers>10000)
+
+Plot_3<- ggplot(data=final2015asylum, mapping= aes(x=reorder(Country,asylum_seekers),y=asylum_seekers,fill=Continent))+
+  geom_bar(stat="identity") + 
+  coord_flip() + 
+ ggtitle ("Plot 3: Countries with most asylum seekers in 2015") +
+  xlab ("Asylum seekers") +
+  ylab("Countries")
+Plot_3
+```
+## The Summer of '15  - What explains acceptance rates?
+
+Leaving the general analysis, let us look at how 2015 looked in specific. Fig.4 is similar to Fig.3, however, it only shows people who applied within the specifically, the year of 2015. Remarkable is the high amount of European countries. Further, the fact that South Africa is far smaller smaller than in the previous graph where it by far outnumbered Germany, shows that the influx of refugees into Germany is rather unprecedented whereas South Africa might have experienced migration throughout the past years. 
+
+```{r Plot4, echo=FALSE}
+final2015apply<- final %>% 
+  select(Year,Country,Applied.during.year,Continent) %>% 
+  filter(Year=="2015") %>% 
+  filter(Applied.during.year>10000)
+
+Plot4 <- ggplot(data=final2015apply, mapping= aes(x=reorder(Country,Applied.during.year),y=Applied.during.year,fill=Continent))+
+  geom_bar(stat="identity") + 
+  coord_flip() + 
+  ggtitle ("Plot 4: Countries with most asylum applications in 2015") +
+  xlab ("Applications throughout 2015") +
+  ylab("Countries")
+Plot4
+
+```
+
+We now turn turn to the analysis of acceptance rates in the year 2015. We first ask whether countries with a lot of applicants face a pressure to raise applications rates. Fig. 5 does not show the indication of such a relation. 
+
+```{r Plot5, fig.height= 4, fig.width=8, echo=FALSE, warning=FALSE}
+final2015 <- final %>%
+  filter(Year=="2015")
+
+Plot5 <- ggplot(data = final2015) + 
+  geom_point(mapping = aes(x = ln.apply, y = share_accept)) +
+  theme_bw() + 
+  ggtitle ("Plot 5: Relation between number of applications and share of acceptance") +
+  xlab ("Acceptance share") +
+  ylab("Log of applications")
+Plot5
+```
+
+Over time and for individual countries, however, we do find such evidence, as we will see in the model. In Fig.6, we test whether the data indeed shows a widespread narrative. An often discussed topic has been the large influx of refugees into Germany in 2015, who were welcomed with "open arms". Indeed the data shows that the number of refugees coming into Germany is much higher than in previous years and simultaneously, the acceptance rate increased sharply in 2015, as can be seen from the graph below.
+Germany's acceptance rate might have been high, but when comparing it with the other countries in the database, across GDP and continent, it is by far not the highest. 
+
+
+```{r Plot6, fig.height= 4, fig.width=10, echo=FALSE, warning=FALSE, comment=FALSE}
+finalgermany <- final %>% 
+  filter(Country=="Germany")
+
+Plot6 <- ggplot(data=finalgermany) +
+  geom_smooth(mapping = aes(x = Year, y = share_accept),se=F) +
+  theme_bw() + 
+ ggtitle ("Plot 6: Germany's acceptance rate across years") +
+  xlab ("Time") +
+  ylab("Acceptance share")
+Plot6
+```
+
+
+Fig. 7, finally, shows the logarithm of GDP plotted against acceptance rates for the year 2015. The colors indicate the continents and the size of the dots mark absolute number of people who apply. We find that the European countries are mostly grouped in the lower right corners with fairly high GDP, relatively low acceptance rates but also with high absolute numbers of applications. In the European group, Germany sticks out as the country with the highest number of applications, followed by Sweden and Hungary. An interesting case is Hungary, which is known for its tough stance on refugees. Hungary has not processed many of the applications it received, rejected most of the ones it did process, and correspondingly has an acceptance rate close to zero percent. 
+
+African countries, as expected, show up on the lower end of the GDP, however, with acceptance rates ranging from 0% to 100%. Although African countries with high acceptance rates generally exhibit lower absolute amount of refugees, there are exceptions such as Uganda. Furthermore, in the African group South Africa sticks out with a huge amount of total decision  but an acceptance rate close to zero. 
+
+Asian countries such as Jordan and Lebanon have acceptance rates close to 100%, which corresponds to the large influx into countries that neighbour a conflicting region (in the case of Jordan and Lebanon this is the Syrian conflict) and the push for hosting these refugees in the region. 
+
+Nevertheless, although applications seem to be more successful in these regional countries, most refugees file an application in European countries (as can be seen from the size of the dots). However, most people who applied for asylum during 2015 applied in European countries. Germany was by far the largest recipient of applications, followed by Hungary, where a lot of refugees got stuck on their journey to other parts of Europe, and Sweden, which is also known as a country of destination. 
+
+Finally, do we find descriptive evidence that GDP is in relation to acceptance rates? Overall, the distribution seems to be random. However, only looking at European countries, the graphs suggests a positive correlation. We will, therefore, proceed to our model to answer this question numerically. 
+
+```{r accgdp,fig.height= 8, fig.asp=0.9, echo=FALSE, warning=FALSE}
+final2015 <- final %>% 
+    filter(Year=="2015")
+accgdp <- ggplot(data = final2015, mapping = aes(x = ln.GDP, y = share_accept, color = Continent, size=Applied.during.year, label=Country)) +
+  geom_point() +
+  geom_text(aes(label=Country),hjust=0, vjust=1) + 
+ggtitle ("Plot 7: Acceptance rate in relation to GDP across continents") +
+  xlab ("Log of GDP") +
+  ylab("Acceptance share")
+accgdp
+```
+
+# MODEL
+Our of interest is whether there is a relation between the number of total applications received and the acceptance rate. A higher number of refugee applications could put an additional strain on country's economies or social welfare systems. This could lead to a more hostile political environment in which the share of accepted applications drops.To explain the acceptance rate we run a linear log fixed effect model, where the dependent variable is the acceptance rate and our regressors are the log of GDP, the log of the number of asylum seekers coming into the country and the log of refugees. The model controls for individual and time fixed effects. We do not run a probit or logit model because we have a large number of observations, which means that the loss in efficiency is minimal and can be disregarded. We are aware that our model is limited and still suffers from omitted variable bias, given that we are not capturing many dynamic effects that explain the acceptance rate. 
+
+
+We find that only the log of the number of asylum seekers has a significant effect on the acceptance rate. When using clustered standard errors it is still significant at the 5 percent level. A doubling of the number of asylum applications leads to a 1.5 percentage point increase in the acceptance rate. Using the log of GDP per capita as opposed to GDP did not significantly alter the results, the coefficient rises to 0.016. When running the same model on a subset of data for Europe the relation disappears. 
+
+#Conclusion
+This paper has tried to investigate what explains the acceptance rate of refugees across countries and has descriptively specifically focused on the year 2015. Descriptive has analysis has shown that there did not seem to be a relation to GDP. Furthermore, most refugees in 2015 ended up in regional countries that border conflict zones, while most applied for asylum in Europe, especially in Germany. Simultaneously, Germany took a lot more refugees in, as it's share of accepted applications rose to 40%. To investigate in more detail what explains the acceptance rate we ran a linear log fixed effects model. We find that only the log of the number of asylum seekers has a significant effect on the acceptance rate. A doubling of the number of asylum applications leads to a 1.5 percentage point increase in the acceptance rate. This relation does not hold when testing it for a subset of data of European countries. 
